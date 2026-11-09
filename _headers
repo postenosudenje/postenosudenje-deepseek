@@ -1,0 +1,9 @@
+/data/utakmice.json
+  Cache-Control: public, max-age=60, stale-while-revalidate=300
+  Access-Control-Allow-Origin: *
+
+/script.js
+  Cache-Control: public, max-age=300
+
+/styles.css
+  Cache-Control: public, max-age=300
