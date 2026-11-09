@@ -1,0 +1,10 @@
+# robots.txt za postenosudenje.com
+
+User-agent: *
+Allow: /
+
+# Ne indeksiraj privremene parametre za pretragu (ako ih imaš u budućnosti)
+Disallow: /*?q=
+
+# Sitemap lokacija
+Sitemap: https://postenosudenje.com/sitemap.xml
