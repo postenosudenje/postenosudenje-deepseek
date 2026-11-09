@@ -2,21 +2,23 @@
 // POŠTENO SUĐENJE - JAVASCRIPT
 // ============================================================
 
-const API_URL_AKTIVNA = "https://script.google.com/macros/s/AKfycbzA4T8Nt1bfqBIrjT4JV9KMFtQRe8ErwpqUOwN6qA3bFdmBBzJeC2B13byrDZC26OfdYg/exec";
-const API_URL_PROŠLA = "https://script.google.com/macros/s/AKfycbxY7F-FzP93x4aT7J0x9l2BYurPDbi6Sve5gGjBH1IOGVx3cCY7Gab8HJHLcwu9NMmCiA/exec";
+const DATA_URL = 'data/utakmice.json';
 
 const SEZONE = [
   { id: 'UKUPNO', naziv: 'Sve sezone (ukupno)', aktivna: false, kombinirano: true },
-  { id: 'AKTIVNA', naziv: '2026/27', url: API_URL_AKTIVNA, aktivna: true },
-  { id: '2025-26', naziv: '2025/26', url: API_URL_PROŠLA, aktivna: false }
+  { id: 'AKTIVNA', naziv: '2026/27', aktivna: true },
+  { id: '2025-26', naziv: '2025/26', aktivna: false }
 ];
 
 let TRENUTNA_SEZONA = 'AKTIVNA';
 let sortListenersInitialized = false;
+let klubTablicaRenderirana = false;
+let kolaRenderirana = false;
 
-const CACHE_TTL = 24 * 60 * 60 * 1000;
 const THEME_KEY = 'posteno_sudenje_theme';
 
+let SVI_PODACI = null;
+let PODACI_UCITANI = false;
 let UTakmice = [];
 let UTakmiceKompletne = [];
 let kluboviCache = {};
@@ -112,20 +114,6 @@ function grbHtml(klub, size = "") {
     return `<img src="${url}" alt="Grb ${klub}" class="klub-grb${sizeClass}" loading="lazy" decoding="async" onerror="this.outerHTML='<span class=\\'klub-grb fallback${sizeClass}\\'><i class=\\'fas fa-shield-alt\\'></i></span>'">`;
   }
   return `<span class="klub-grb fallback${sizeClass}"><i class="fas fa-shield-alt" aria-hidden="true"></i></span>`;
-}
-
-function getCacheKey(sezona) { return 'posteno_sudenje_' + sezona + '_v33'; }
-function getCachedData(sezona = TRENUTNA_SEZONA) {
-  try {
-    const raw = localStorage.getItem(getCacheKey(sezona));
-    if (!raw) return null;
-    const { timestamp, data } = JSON.parse(raw);
-    if (Date.now() - timestamp > CACHE_TTL) { localStorage.removeItem(getCacheKey(sezona)); return null; }
-    return data;
-  } catch (e) { return null; }
-}
-function setCachedData(data, sezona = TRENUTNA_SEZONA) {
-  try { localStorage.setItem(getCacheKey(sezona), JSON.stringify({ timestamp: Date.now(), data })); } catch (e) {}
 }
 
 function updateSEOForSection(section) {
@@ -240,6 +228,21 @@ function provjeriURL() {
       prikaziModalKlub(klub);
     }
   }
+}
+
+// ============================================================
+// DOHVAT UTAKMICA ZA SEZONU (iz SVI_PODACI)
+// ============================================================
+function dohvatiUtakmiceZaSezonu(sezona) {
+  if (!SVI_PODACI) return [];
+  if (sezona === 'UKUPNO') {
+    const sve = [];
+    if (SVI_PODACI.aktivna) sve.push(...SVI_PODACI.aktivna);
+    if (SVI_PODACI['2025-26']) sve.push(...SVI_PODACI['2025-26']);
+    return sve;
+  }
+  const kljuc = sezona === 'AKTIVNA' ? 'aktivna' : sezona;
+  return SVI_PODACI[kljuc] || [];
 }
 
 // ============================================================
@@ -595,113 +598,31 @@ function prikaziModalSudac(ime) {
 }
 
 // ============================================================
-// UČITAVANJE PODATAKA
+// UČITAVANJE PODATAKA — STATIČKI JSON
 // ============================================================
-async function fetchWithTimeout(url, timeout = 60000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  try {
-    const r = await fetch(url, { signal: controller.signal, cache: 'default', redirect: 'follow' });
-    clearTimeout(timer);
-    return r;
-  } catch (e) { clearTimeout(timer); throw e; }
-}
-
-async function ucitajSveSezone() {
-  const sveUtakmice = [];
-  try {
-    let aktivnaData = getCachedData('AKTIVNA');
-    if (!aktivnaData) {
-      const r = await fetchWithTimeout(API_URL_AKTIVNA, 60000);
-      aktivnaData = await r.json();
-      if (Array.isArray(aktivnaData) && aktivnaData.length > 0) {
-        aktivnaData = filtrirajUtakmice(aktivnaData);
-        setCachedData(aktivnaData, 'AKTIVNA');
-      }
-    }
-    if (Array.isArray(aktivnaData)) {
-      aktivnaData.forEach(u => { u._sezona = 'AKTIVNA'; });
-      sveUtakmice.push(...aktivnaData);
-    }
-  } catch (e) { console.warn('Aktivna:', e); }
-  try {
-    let prošlaData = getCachedData('2025-26');
-    if (!prošlaData) {
-      const r = await fetchWithTimeout(API_URL_PROŠLA, 60000);
-      prošlaData = await r.json();
-      if (Array.isArray(prošlaData) && prošlaData.length > 0) {
-        prošlaData = filtrirajUtakmice(prošlaData);
-        setCachedData(prošlaData, '2025-26');
-      }
-    }
-    if (Array.isArray(prošlaData)) {
-      prošlaData.forEach(u => { u._sezona = '2025-26'; });
-      sveUtakmice.push(...prošlaData);
-    }
-  } catch (e) { console.warn('Prošla:', e); }
-  return sveUtakmice;
-}
-
 async function ucitajPodatke(sezona = TRENUTNA_SEZONA) {
   document.getElementById("errorBox").style.display = "none";
 
-  if (sezona === 'UKUPNO') {
-    document.getElementById("skeleton").style.display = "grid";
-    document.getElementById("app").style.display = "none";
+  // Prvi put — dohvati data/utakmice.json (jedan fajl, sve sezone)
+  if (!PODACI_UCITANI) {
     try {
-      const sve = await ucitajSveSezone();
-      if (!sve || sve.length === 0) throw new Error("Nema podataka ni u jednoj sezoni");
-      UTakmice = filtrirajUtakmice(sve);
-      requestAnimationFrame(() => pokreni());
+      const r = await fetch(DATA_URL, { cache: 'default' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      SVI_PODACI = await r.json();
+      PODACI_UCITANI = true;
     } catch (err) {
       document.getElementById("skeleton").style.display = "none";
       const e = document.getElementById("errorBox");
       e.style.display = "block";
       e.innerHTML = `<b>Greška:</b> ${err.message}`;
+      return;
     }
-    return;
   }
 
-  const sezonaObj = SEZONE.find(s => s.id === sezona);
-  if (!sezonaObj || !sezonaObj.url) return;
+  const sirovi = dohvatiUtakmiceZaSezonu(sezona);
+  UTakmice = filtrirajUtakmice(sirovi);
 
-  const cached = getCachedData(sezona);
-  if (cached && Array.isArray(cached) && cached.length > 0) {
-    UTakmice = cached;
-    requestAnimationFrame(() => pokreni());
-    return;
-  }
-
-  try {
-    const r = await fetchWithTimeout(sezonaObj.url, 60000);
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-    if (!Array.isArray(data) || data.length === 0) throw new Error("Nema podataka za sezonu " + sezonaObj.naziv);
-    UTakmice = filtrirajUtakmice(data);
-    setCachedData(UTakmice, sezona);
-    requestAnimationFrame(() => pokreni());
-  } catch (err) {
-    document.getElementById("skeleton").style.display = "none";
-    const e = document.getElementById("errorBox");
-    e.style.display = "block";
-    e.innerHTML = `<b>Greška:</b> ${err.message}`;
-  }
-}
-
-async function ucitajSveOdjednom() {
-  try { await ucitajPodatke(TRENUTNA_SEZONA); } catch (e) { console.warn(e); }
-  try {
-    if (!getCachedData('2025-26')) {
-      const sezonaObj = SEZONE.find(s => s.id === '2025-26');
-      if (sezonaObj && sezonaObj.url) {
-        const r = await fetchWithTimeout(sezonaObj.url, 60000);
-        const data = await r.json();
-        if (Array.isArray(data) && data.length > 0) {
-          setCachedData(filtrirajUtakmice(data), '2025-26');
-        }
-      }
-    }
-  } catch (e) { /* ignore */ }
+  requestAnimationFrame(() => pokreni());
 }
 
 function pokreni() {
@@ -748,8 +669,14 @@ function pokreni() {
     `;
   }
 
-  renderKlubTablicu();
-  nacrtajZutiChart();
+  // Lazy render — samo aktivna sekcija
+  const aktivna = document.querySelector(".section-panel.active")?.id;
+  if (aktivna === 'section-pregled' || !klubTablicaRenderirana) {
+    renderKlubTablicu();
+    nacrtajZutiChart();
+    klubTablicaRenderirana = true;
+  }
+
   provjeriURL();
 
   if (!sortListenersInitialized) {
@@ -771,6 +698,17 @@ function pokreni() {
         const sekcija = this.dataset.section;
         document.getElementById("section-" + sekcija).classList.add("active");
         updateSEOForSection(sekcija);
+
+        // Lazy render po sekciji
+        if (sekcija === 'pregled' && !klubTablicaRenderirana) {
+          renderKlubTablicu();
+          nacrtajZutiChart();
+          klubTablicaRenderirana = true;
+        }
+        if (sekcija === 'utakmice' && !kolaRenderirana) {
+          popuniKola();
+          kolaRenderirana = true;
+        }
       });
     });
 
@@ -795,6 +733,8 @@ async function promijeniSezonu(novaSezona) {
   sortState = { key: null, dir: -1 };
   sviSuci = [];
   sviKlubovi = [];
+  klubTablicaRenderirana = false;
+  kolaRenderirana = false;
   const selSudac = document.getElementById("sudacSezonaSelect");
   const selKlub = document.getElementById("klubSezonaSelect");
   if (selSudac) selSudac.value = novaSezona;
@@ -1051,7 +991,7 @@ function popuniKola() {
 // ============================================================
 // PRIKAZ SUCA U STATISTICI
 // ============================================================
-async function prikaziSuca(ime) {
+function prikaziSuca(ime) {
   const div = document.getElementById("sudacStats");
   if (!ime) { div.classList.remove("visible"); return; }
   const sel = document.getElementById("sudacSezonaSelect");
@@ -1062,7 +1002,7 @@ async function prikaziSuca(ime) {
   document.getElementById("statsGrid").innerHTML = `<div class="stat-item" style="grid-column:1/-1; text-align:center; padding:2rem;"><i class="fas fa-spinner fa-spin" style="font-size:1.5rem; color:var(--yellow);"></i></div>`;
   document.getElementById("sudacKluboviList").innerHTML = "";
 
-  const utakmice = sezona === 'UKUPNO' ? await ucitajSveSezone() : (getCachedData(sezona) || []);
+  const utakmice = dohvatiUtakmiceZaSezonu(sezona);
   const kompletne = filtrirajKompletneKola(utakmice);
 
   let zuti=0, crveni=0, penal=0, vp=0, vpo=0, broj=0;
@@ -1140,7 +1080,7 @@ async function prikaziSuca(ime) {
 // ============================================================
 // PRIKAZ KLUBA U STATISTICI
 // ============================================================
-async function prikaziKlub(klub) {
+function prikaziKlub(klub) {
   const div = document.getElementById("klubStats");
   if (!klub) { div.classList.remove("visible"); return; }
   const sel = document.getElementById("klubSezonaSelect");
@@ -1151,7 +1091,7 @@ async function prikaziKlub(klub) {
   document.getElementById("klubStatsGrid").innerHTML = `<div class="stat-item" style="grid-column:1/-1; text-align:center; padding:2rem;"><i class="fas fa-spinner fa-spin" style="font-size:1.5rem; color:var(--yellow);"></i></div>`;
   document.getElementById("klubSuciList").innerHTML = "";
 
-  const utakmice = sezona === 'UKUPNO' ? await ucitajSveSezone() : (getCachedData(sezona) || []);
+  const utakmice = dohvatiUtakmiceZaSezonu(sezona);
   const kompletne = filtrirajKompletneKola(utakmice);
 
   let zuti=0, crveni=0, penal=0, vp=0, vpo=0, broj=0;
@@ -1338,9 +1278,9 @@ function popuniUsporedbaComboboxove() {
   if (selKB && !selKB.dataset.listenerAdded) { selKB.dataset.listenerAdded = "1"; selKB.addEventListener("change", () => azurirajUsporedbuKlubova(null, null)); }
 }
 
-async function izracunajStatSudacZaSezonu(ime, sezona) {
+function izracunajStatSudacZaSezonu(ime, sezona) {
   if (!ime) return null;
-  const utakmice = sezona === 'UKUPNO' ? await ucitajSveSezone() : (getCachedData(sezona) || []);
+  const utakmice = dohvatiUtakmiceZaSezonu(sezona);
   const kompletne = filtrirajKompletneKola(utakmice);
   let z=0, c=0, p=0, v1=0, v2=0, br=0;
   kompletne.forEach(u => {
@@ -1355,9 +1295,9 @@ async function izracunajStatSudacZaSezonu(ime, sezona) {
   return { ime, br, z, c, p, v1, v2, ukupno: z+c+p+v1+v2, sezona };
 }
 
-async function izracunajStatKlubZaSezonu(ime, sezona) {
+function izracunajStatKlubZaSezonu(ime, sezona) {
   if (!ime) return null;
-  const utakmice = sezona === 'UKUPNO' ? await ucitajSveSezone() : (getCachedData(sezona) || []);
+  const utakmice = dohvatiUtakmiceZaSezonu(sezona);
   const kompletne = filtrirajKompletneKola(utakmice);
   let z=0, c=0, p=0, v1=0, v2=0, br=0;
   kompletne.forEach(u => {
@@ -1380,12 +1320,12 @@ function escapeHtml(s) {
   }[c]));
 }
 
-async function napraviUsporedbaHTML(a, b, tip, sezonaA, sezonaB) {
+function napraviUsporedbaHTML(a, b, tip, sezonaA, sezonaB) {
   if (!a || !b) {
     return `<div class="usporedba-prazno"><i class="fas fa-users"></i>Odaberi dva ${tip === 'sudac' ? 'suca' : 'kluba'} za usporedbu</div>`;
   }
-  const A = tip === 'sudac' ? await izracunajStatSudacZaSezonu(a, sezonaA) : await izracunajStatKlubZaSezonu(a, sezonaA);
-  const B = tip === 'sudac' ? await izracunajStatSudacZaSezonu(b, sezonaB) : await izracunajStatKlubZaSezonu(b, sezonaB);
+  const A = tip === 'sudac' ? izracunajStatSudacZaSezonu(a, sezonaA) : izracunajStatKlubZaSezonu(a, sezonaA);
+  const B = tip === 'sudac' ? izracunajStatSudacZaSezonu(b, sezonaB) : izracunajStatKlubZaSezonu(b, sezonaB);
   if (!A || !B || (A.br === 0 && B.br === 0)) {
     return `<div class="usporedba-prazno"><i class="fas fa-exclamation-circle"></i>Nema dovoljno podataka.</div>`;
   }
@@ -1417,7 +1357,7 @@ async function napraviUsporedbaHTML(a, b, tip, sezonaA, sezonaB) {
   `;
 }
 
-async function azurirajUsporedbuSudaca(a, b) {
+function azurirajUsporedbuSudaca(a, b) {
   const inputA = document.getElementById("usporedbaSudacA");
   const inputB = document.getElementById("usporedbaSudacB");
   const selA = document.getElementById("usporedbaSudacASezona");
@@ -1427,11 +1367,10 @@ async function azurirajUsporedbuSudaca(a, b) {
   const sezonaA = selA ? selA.value : TRENUTNA_SEZONA;
   const sezonaB = selB ? selB.value : TRENUTNA_SEZONA;
   const rezultat = document.getElementById("usporedbaSudacRezultat");
-  rezultat.innerHTML = `<div class="usporedba-prazno"><i class="fas fa-spinner fa-spin"></i></div>`;
-  rezultat.innerHTML = await napraviUsporedbaHTML(valA, valB, 'sudac', sezonaA, sezonaB);
+  rezultat.innerHTML = napraviUsporedbaHTML(valA, valB, 'sudac', sezonaA, sezonaB);
 }
 
-async function azurirajUsporedbuKlubova(a, b) {
+function azurirajUsporedbuKlubova(a, b) {
   const inputA = document.getElementById("usporedbaKlubA");
   const inputB = document.getElementById("usporedbaKlubB");
   const selA = document.getElementById("usporedbaKlubASezona");
@@ -1441,8 +1380,7 @@ async function azurirajUsporedbuKlubova(a, b) {
   const sezonaA = selA ? selA.value : TRENUTNA_SEZONA;
   const sezonaB = selB ? selB.value : TRENUTNA_SEZONA;
   const rezultat = document.getElementById("usporedbaKlubRezultat");
-  rezultat.innerHTML = `<div class="usporedba-prazno"><i class="fas fa-spinner fa-spin"></i></div>`;
-  rezultat.innerHTML = await napraviUsporedbaHTML(valA, valB, 'klub', sezonaA, sezonaB);
+  rezultat.innerHTML = napraviUsporedbaHTML(valA, valB, 'klub', sezonaA, sezonaB);
 }
 
 // ============================================================
@@ -1516,5 +1454,5 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  ucitajSveOdjednom();
+  ucitajPodatke(TRENUTNA_SEZONA);
 });
