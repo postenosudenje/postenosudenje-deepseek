@@ -607,7 +607,6 @@ function prikaziModalSudac(ime) {
 async function ucitajPodatke(sezona = TRENUTNA_SEZONA) {
   document.getElementById("errorBox").style.display = "none";
 
-  // Prvi put — dohvati data/utakmice.json (jedan fajl, sve sezone)
   if (!PODACI_UCITANI) {
     try {
       const r = await fetch(DATA_URL, { cache: 'default' });
@@ -673,7 +672,6 @@ function pokreni() {
     `;
   }
 
-  // Lazy render — samo aktivna sekcija
   const aktivna = document.querySelector(".section-panel.active")?.id;
   if (aktivna === 'section-pregled' || !klubTablicaRenderirana) {
     renderKlubTablicu();
@@ -703,7 +701,6 @@ function pokreni() {
         document.getElementById("section-" + sekcija).classList.add("active");
         updateSEOForSection(sekcija);
 
-        // Lazy render po sekciji
         if (sekcija === 'pregled' && !klubTablicaRenderirana) {
           renderKlubTablicu();
           nacrtajZutiChart();
@@ -777,6 +774,9 @@ function sazetak() {
   `;
 }
 
+// ============================================================
+// GRAF — dinamički: po kolu (pojedinačna sezona) ili po sezoni (UKUPNO)
+// ============================================================
 function nacrtajZutiChart() {
   const canvas = document.getElementById("zutiChart");
   if (!canvas || typeof Chart === 'undefined') return;
@@ -795,7 +795,6 @@ function nacrtajZutiChart() {
       poSezoni[s] += num(u["Žuti D"]) + num(u["Žuti G"]);
     });
 
-    // Redoslijed: 2025-26 pa AKTIVNA (hronološki)
     const redoslijed = ['2025-26', 'AKTIVNA'];
     const sezone = Object.keys(poSezoni).sort((a, b) => {
       const ia = redoslijed.indexOf(a);
@@ -814,7 +813,6 @@ function nacrtajZutiChart() {
       naslovEl.innerHTML = '<i class="fas fa-chart-line" aria-hidden="true"></i> Žuti kartoni po sezoni';
     }
   } else {
-    // Grupiraj po kolu (postojeće ponašanje)
     const poKolu = {};
     UTakmiceKompletne.forEach(u => {
       const k = num(u.Kolo);
@@ -848,7 +846,6 @@ function nacrtajZutiChart() {
     ? 'rgba(184,134,11,0.25)' : 'rgba(245,197,24,0.35)');
   gradient.addColorStop(1, 'rgba(245,197,24,0.02)');
 
-  // Za "po sezoni" koristimo bar chart (2 stupca), za "po kolu" line chart
   const tipGrafa = jeUkupno ? 'bar' : 'line';
 
   zutiChartInstance = new Chart(ctx, {
