@@ -237,8 +237,12 @@ function dohvatiUtakmiceZaSezonu(sezona) {
   if (!SVI_PODACI) return [];
   if (sezona === 'UKUPNO') {
     const sve = [];
-    if (SVI_PODACI.aktivna) sve.push(...SVI_PODACI.aktivna);
-    if (SVI_PODACI['2025-26']) sve.push(...SVI_PODACI['2025-26']);
+    if (SVI_PODACI.aktivna) {
+      SVI_PODACI.aktivna.forEach(u => sve.push({ ...u, _sezona: 'AKTIVNA' }));
+    }
+    if (SVI_PODACI['2025-26']) {
+      SVI_PODACI['2025-26'].forEach(u => sve.push({ ...u, _sezona: '2025-26' }));
+    }
     return sve;
   }
   const kljuc = sezona === 'AKTIVNA' ? 'aktivna' : sezona;
@@ -776,15 +780,58 @@ function sazetak() {
 function nacrtajZutiChart() {
   const canvas = document.getElementById("zutiChart");
   if (!canvas || typeof Chart === 'undefined') return;
-  const poKolu = {};
-  UTakmiceKompletne.forEach(u => {
-    const k = num(u.Kolo);
-    if (k < 1) return;
-    if (!poKolu[k]) poKolu[k] = 0;
-    poKolu[k] += num(u["Žuti D"]) + num(u["Žuti G"]);
-  });
-  const kola = Object.keys(poKolu).map(Number).sort((a,b)=>a-b);
-  const vrijednosti = kola.map(k => poKolu[k]);
+
+  const jeUkupno = TRENUTNA_SEZONA === 'UKUPNO';
+  const naslovEl = document.getElementById("chartTitle");
+
+  let labels, vrijednosti, datasetLabel;
+
+  if (jeUkupno) {
+    // Grupiraj po sezoni
+    const poSezoni = {};
+    UTakmiceKompletne.forEach(u => {
+      const s = u._sezona || 'Nepoznato';
+      if (!poSezoni[s]) poSezoni[s] = 0;
+      poSezoni[s] += num(u["Žuti D"]) + num(u["Žuti G"]);
+    });
+
+    // Redoslijed: 2025-26 pa AKTIVNA (hronološki)
+    const redoslijed = ['2025-26', 'AKTIVNA'];
+    const sezone = Object.keys(poSezoni).sort((a, b) => {
+      const ia = redoslijed.indexOf(a);
+      const ib = redoslijed.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+
+    labels = sezone.map(s => {
+      const info = SEZONE.find(x => x.id === s);
+      return info ? info.naziv : s;
+    });
+    vrijednosti = sezone.map(s => poSezoni[s]);
+    datasetLabel = 'Žuti kartoni';
+
+    if (naslovEl) {
+      naslovEl.innerHTML = '<i class="fas fa-chart-line" aria-hidden="true"></i> Žuti kartoni po sezoni';
+    }
+  } else {
+    // Grupiraj po kolu (postojeće ponašanje)
+    const poKolu = {};
+    UTakmiceKompletne.forEach(u => {
+      const k = num(u.Kolo);
+      if (k < 1) return;
+      if (!poKolu[k]) poKolu[k] = 0;
+      poKolu[k] += num(u["Žuti D"]) + num(u["Žuti G"]);
+    });
+    const kola = Object.keys(poKolu).map(Number).sort((a, b) => a - b);
+    labels = kola.map(k => `K${k}`);
+    vrijednosti = kola.map(k => poKolu[k]);
+    datasetLabel = 'Žuti kartoni';
+
+    if (naslovEl) {
+      naslovEl.innerHTML = '<i class="fas fa-chart-line" aria-hidden="true"></i> Žuti kartoni po kolu';
+    }
+  }
+
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (zutiChartInstance) zutiChartInstance.destroy();
 
@@ -800,23 +847,28 @@ function nacrtajZutiChart() {
   gradient.addColorStop(0, document.documentElement.getAttribute('data-theme') === 'light'
     ? 'rgba(184,134,11,0.25)' : 'rgba(245,197,24,0.35)');
   gradient.addColorStop(1, 'rgba(245,197,24,0.02)');
+
+  // Za "po sezoni" koristimo bar chart (2 stupca), za "po kolu" line chart
+  const tipGrafa = jeUkupno ? 'bar' : 'line';
+
   zutiChartInstance = new Chart(ctx, {
-    type: 'line',
+    type: tipGrafa,
     data: {
-      labels: kola.map(k => `K${k}`),
+      labels: labels,
       datasets: [{
-        label: 'Žuti kartoni',
+        label: datasetLabel,
         data: vrijednosti,
         borderColor: yellowColor,
-        backgroundColor: gradient,
+        backgroundColor: jeUkupno ? yellowColor : gradient,
         borderWidth: 2.5,
-        fill: true,
+        fill: !jeUkupno,
         tension: 0.35,
         pointRadius: 4,
         pointHoverRadius: 7,
         pointBackgroundColor: yellowColor,
         pointBorderColor: borderColor,
-        pointBorderWidth: 2
+        pointBorderWidth: 2,
+        borderRadius: jeUkupno ? 8 : 0
       }]
     },
     options: {
@@ -824,10 +876,21 @@ function nacrtajZutiChart() {
       maintainAspectRatio: false,
       animation: reducedMotion ? false : { duration: 700 },
       interaction: { intersect: false, mode: 'index' },
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.parsed.y} žutih kartona`
+          }
+        }
+      },
       scales: {
         x: { grid: { color: gridColor }, ticks: { color: textMuted, font: { size: 11 } } },
-        y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: textMuted, font: { size: 11 }, precision: 0 } }
+        y: {
+          beginAtZero: true,
+          grid: { color: gridColor },
+          ticks: { color: textMuted, font: { size: 11 }, precision: 0 }
+        }
       }
     }
   });
